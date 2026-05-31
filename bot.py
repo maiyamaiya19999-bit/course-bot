@@ -67,8 +67,8 @@ KICK_TIMEOUT_HOURS = 24
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
     await update.message.reply_text(
-        "Привет! Я бот курса «ИИ-стратегия на миллион» от maysoulme.\n\n"
-        "Если ты оплатил(а) курс и вступил(а) в группу — я проверю твою оплату автоматически.\n\n"
+        "Привет! Я бот интенсива «ИИ-стратегия на миллион» от maysoulme.\n\n"
+        "Если ты оплатил(а) интенсив и вступил(а) в группу — я проверю твою оплату автоматически.\n\n"
         "Если я попрошу подтвердить оплату — просто отправь мне:\n"
         "- Email, который указывал(а) при оплате, или\n"
         "- Номер телефона\n\n"
@@ -80,7 +80,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /help"""
     await update.message.reply_text(
         "Если у тебя проблемы с доступом к группе:\n\n"
-        "1. Убедись, что ты оплатил(а) курс\n"
+        "1. Убедись, что ты оплатил(а) интенсив\n"
         "2. Отправь мне email или номер телефона, "
         "который указывал(а) при оплате\n"
         "3. Я проверю и подтвержу доступ\n\n"
@@ -137,7 +137,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=user.id,
             text=(
-                f"Привет, {user.first_name}! Ты вступил(а) в группу курса.\n\n"
+                f"Привет, {user.first_name}! Ты вступил(а) в группу интенсива.\n\n"
                 "Я не смог(ла) автоматически найти твою оплату. "
                 "Отправь мне, пожалуйста:\n\n"
                 "- **Email**, который указывал(а) при оплате, или\n"
@@ -211,7 +211,7 @@ async def kick_unverified_user(context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     "К сожалению, я не смог(ла) подтвердить твою оплату "
                     "в течение 24 часов, и доступ к группе был закрыт.\n\n"
-                    "Если ты оплатил(а) курс — напиши @maysoulme, "
+                    "Если ты оплатил(а) интенсив — напиши @maysoulme, "
                     "и мы разберёмся!"
                 ),
             )
@@ -268,7 +268,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
 
         await update.message.reply_text(
             "Оплата найдена! Доступ подтверждён. "
-            "Добро пожаловать на курс!"
+            "Добро пожаловать на интенсив!"
         )
         logger.info(f"Оплата подтверждена для пользователя {user.id} по данным: {text}")
 
@@ -315,7 +315,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text="Твой доступ к группе подтверждён! Добро пожаловать на курс!",
+                text="Твой доступ к группе подтверждён! Добро пожаловать на интенсив!",
             )
         except Exception:
             pass
