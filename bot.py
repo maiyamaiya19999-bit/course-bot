@@ -1,30 +1,27 @@
 """
-Бот для автоматической проверки оплат в Telegram-группе maysoulme
+Бот-вышибала для Telegram-группы интенсива maysoulme
 
 Что делает:
 1. Принимает webhook от Prodamus (оплата прошла) → сохраняет в базу
 2. Следит за новыми участниками в группе
-3. Проверяет: оплатил ли человек?
-   - Да (username совпал) → оставляет
-   - Не уверен → пишет человеку в ЛС, просит email/телефон
-   - Не оплатил → через 24 часа кикает
-4. Позволяет админу вручную одобрить/отклонить
+3. Проверяет по username: оплатил ли человек?
+   - Да → оставляет
+   - Нет → кикает через 24 часа
+4. Админ получает уведомление и может вручную одобрить/кикнуть
 """
 
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 
 from aiohttp import web
 from dotenv import load_dotenv
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     ChatMemberHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -33,12 +30,6 @@ from database import (
     init_db,
     add_payment,
     find_payment_by_username,
-    find_payment_by_email,
-    find_payment_by_phone,
-    add_pending_user,
-    remove_pending_user,
-    get_pending_users,
-    normalize_username,
 )
 from prodamus import extract_payment_data
 
@@ -58,34 +49,10 @@ logger = logging.getLogger(__name__)
 # Время запуска бота — все кто был в группе ДО этого момента НЕ проверяются
 BOT_START_TIME = None
 
-# Время ожидания подтверждения (в часах) перед кик
-KICK_TIMEOUT_HOURS = 24
-
-
-# ─── Команды бота ───────────────────────────────────────────
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /start"""
-    await update.message.reply_text(
-        "Привет! Я бот интенсива «ИИ-стратегия на миллион» от maysoulme.\n\n"
-        "Если ты оплатил(а) интенсив и вступил(а) в группу — я проверю твою оплату автоматически.\n\n"
-        "Если я попрошу подтвердить оплату — просто отправь мне:\n"
-        "- Email, который указывал(а) при оплате, или\n"
-        "- Номер телефона\n\n"
-        "И я найду твою оплату!"
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /help"""
-    await update.message.reply_text(
-        "Если у тебя проблемы с доступом к группе:\n\n"
-        "1. Убедись, что ты оплатил(а) интенсив\n"
-        "2. Отправь мне email или номер телефона, "
-        "который указывал(а) при оплате\n"
-        "3. Я проверю и подтвержу доступ\n\n"
-        "Если что-то не получается — напиши @maysouIme"
-    )
+# Ссылки-исключения: кто вступает по ним — не проверяются
+WHITELIST_INVITE_LINKS = {
+    "https://t.me/+skIW4Cj80zkzMjIy",
+}
 
 
 # ─── Обработка новых участников ─────────────────────────────
@@ -94,6 +61,7 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Срабатывает когда кто-то заходит в группу.
     Проверяет, есть ли оплата по username.
+    Если нет — кикает через 24 часа.
     """
     if not update.chat_member:
         return
@@ -118,225 +86,51 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пропускаем {user.first_name} — был в группе до запуска бота")
         return
 
+    # Не проверяем тех, кого добавил админ вручную
+    if update.chat_member.from_user and update.chat_member.from_user.id == ADMIN_CHAT_ID:
+        logger.info(f"Пропускаем {user.first_name} — добавлен админом вручную")
+        return
+
+    # Не проверяем тех, кто вступил по спец-ссылке (оплата не через Продамус)
+    invite_link = update.chat_member.invite_link
+    if invite_link and invite_link.invite_link in WHITELIST_INVITE_LINKS:
+        logger.info(f"Пропускаем {user.first_name} — вступил по спец-ссылке")
+        return
+
     logger.info(f"Новый участник: {user.first_name} (@{user.username}), ID: {user.id}")
 
-    # Проверка 1: по username
+    # Проверка по username
     if user.username:
         payment = find_payment_by_username(user.username)
         if payment:
             logger.info(f"Оплата найдена для @{user.username}")
-            remove_pending_user(user.id)
             return  # Всё ок, человек оплатил
 
-    # Оплата не найдена — добавляем в список ожидающих
-    add_pending_user(user.id, user.username, user.first_name, user.last_name or "")
-    logger.info(f"Оплата НЕ найдена для @{user.username}, добавлен в pending")
+    # Оплата не найдена — кикаем сразу
+    logger.info(f"Оплата НЕ найдена для @{user.username}, кикаем")
 
-    # Пишем человеку в ЛС
+    chat_id = update.chat_member.chat.id
     try:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                f"Привет, {user.first_name}! Ты вступил(а) в группу интенсива.\n\n"
-                "Я не смог(ла) автоматически найти твою оплату. "
-                "Отправь мне, пожалуйста:\n\n"
-                "- **Email**, который указывал(а) при оплате, или\n"
-                "- **Номер телефона**\n\n"
-                "И я подтвержу твой доступ!"
-            ),
-            parse_mode="Markdown",
-        )
+        await context.bot.ban_chat_member(chat_id=chat_id, user_id=user.id)
+        await context.bot.unban_chat_member(chat_id=chat_id, user_id=user.id)
+        logger.info(f"Кикнут {user.first_name} (@{user.username}) — оплата не найдена")
     except Exception as e:
-        # Не смогли написать в ЛС (человек не начинал чат с ботом)
-        logger.warning(f"Не удалось написать в ЛС пользователю {user.id}: {e}")
+        logger.error(f"Ошибка при кике {user.id}: {e}")
 
     # Уведомляем админа
     if ADMIN_CHAT_ID:
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Одобрить", callback_data=f"approve_{user.id}"),
-                InlineKeyboardButton("Кикнуть", callback_data=f"kick_{user.id}"),
-            ]
-        ])
         username_text = f"@{user.username}" if user.username else "нет username"
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=(
-                f"Новый участник в группе:\n"
-                f"Имя: {user.first_name} {user.last_name or ''}\n"
+                f"🚫 Кикнут: {user.first_name} {user.last_name or ''}\n"
                 f"Username: {username_text}\n"
                 f"ID: {user.id}\n\n"
-                f"Оплата не найдена автоматически.\n"
-                f"Одобрить или кикнуть?"
+                f"Оплата не найдена в базе."
             ),
-            reply_markup=keyboard,
-        )
-
-    # Планируем проверку через 24 часа
-    context.job_queue.run_once(
-        kick_unverified_user,
-        when=timedelta(hours=KICK_TIMEOUT_HOURS),
-        data={"user_id": user.id, "chat_id": update.chat_member.chat.id},
-        name=f"kick_{user.id}",
-    )
-
-
-async def kick_unverified_user(context: ContextTypes.DEFAULT_TYPE):
-    """Кикает пользователя, если за 24 часа не подтвердил оплату"""
-    data = context.job.data
-    user_id = data["user_id"]
-    chat_id = data["chat_id"]
-
-    # Проверяем, может уже подтвердили
-    from database import get_db
-    conn = get_db()
-    pending = conn.execute(
-        "SELECT * FROM pending_users WHERE telegram_user_id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
-
-    if not pending:
-        return  # Уже подтверждён, не кикаем
-
-    try:
-        await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-        # Сразу разбаниваем, чтобы человек мог вернуться после оплаты
-        await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
-        logger.info(f"Кикнут пользователь {user_id} — оплата не подтверждена")
-
-        # Пишем человеку
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    "К сожалению, я не смог(ла) подтвердить твою оплату "
-                    "в течение 24 часов, и доступ к группе был закрыт.\n\n"
-                    "Если ты оплатил(а) интенсив — напиши @maysouIme, "
-                    "и мы разберёмся!"
-                ),
-            )
-        except Exception:
-            pass
-
-        remove_pending_user(user_id)
-
-    except Exception as e:
-        logger.error(f"Ошибка при кике пользователя {user_id}: {e}")
-
-
-# ─── Обработка сообщений в ЛС (подтверждение оплаты) ────────
-
-async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Когда человек пишет боту email или телефон —
-    проверяем по базе оплат
-    """
-    if update.message.chat.type != "private":
-        return
-
-    text = update.message.text.strip()
-    user = update.message.from_user
-
-    # Проверяем, есть ли этот человек в списке ожидающих
-    from database import get_db
-    conn = get_db()
-    pending = conn.execute(
-        "SELECT * FROM pending_users WHERE telegram_user_id = ?", (user.id,)
-    ).fetchone()
-    conn.close()
-
-    if not pending:
-        await update.message.reply_text(
-            "Привет! Если тебе нужна помощь — напиши /help"
-        )
-        return
-
-    # Пробуем найти оплату по email
-    payment = find_payment_by_email(text)
-    if not payment:
-        # Пробуем по телефону
-        payment = find_payment_by_phone(text)
-
-    if payment:
-        # Нашли оплату!
-        remove_pending_user(user.id)
-
-        # Отменяем запланированный кик
-        jobs = context.job_queue.get_jobs_by_name(f"kick_{user.id}")
-        for job in jobs:
-            job.schedule_removal()
-
-        await update.message.reply_text(
-            "Оплата найдена! Доступ подтверждён. "
-            "Добро пожаловать на интенсив!"
-        )
-        logger.info(f"Оплата подтверждена для пользователя {user.id} по данным: {text}")
-
-        # Уведомляем админа
-        if ADMIN_CHAT_ID:
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"Оплата подтверждена для {user.first_name} (@{user.username}) по: {text}",
-            )
-    else:
-        await update.message.reply_text(
-            "Не нашла оплату по этим данным.\n\n"
-            "Попробуй отправить:\n"
-            "- Другой email\n"
-            "- Номер телефона в формате +79991234567\n\n"
-            "Или напиши @maysouIme для помощи."
         )
 
 
-# ─── Кнопки админа (одобрить / кикнуть) ─────────────────────
-
-async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий кнопок 'Одобрить' / 'Кикнуть'"""
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != ADMIN_CHAT_ID:
-        return
-
-    action, user_id_str = query.data.split("_", 1)
-    user_id = int(user_id_str)
-
-    if action == "approve":
-        remove_pending_user(user_id)
-        # Отменяем кик
-        jobs = context.job_queue.get_jobs_by_name(f"kick_{user_id}")
-        for job in jobs:
-            job.schedule_removal()
-
-        await query.edit_message_text(
-            query.message.text + "\n\n Одобрено вручную"
-        )
-
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="Твой доступ к группе подтверждён! Добро пожаловать на интенсив!",
-            )
-        except Exception:
-            pass
-
-    elif action == "kick":
-        remove_pending_user(user_id)
-        # Отменяем запланированный кик (кикнем сейчас)
-        jobs = context.job_queue.get_jobs_by_name(f"kick_{user_id}")
-        for job in jobs:
-            job.schedule_removal()
-
-        if GROUP_ID:
-            try:
-                await context.bot.ban_chat_member(chat_id=GROUP_ID, user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=GROUP_ID, user_id=user_id)
-            except Exception as e:
-                logger.error(f"Ошибка при кике: {e}")
-
-        await query.edit_message_text(
-            query.message.text + "\n\n Кикнут"
-        )
 
 
 # ─── Webhook от Prodamus ────────────────────────────────────
@@ -383,7 +177,7 @@ async def handle_prodamus_webhook(request):
             await bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=(
-                    f"Новая оплата!\n"
+                    f"💰 Новая оплата!\n\n"
                     f"Имя: {payment_data.get('name', '—')}\n"
                     f"Email: {payment_data.get('email', '—')}\n"
                     f"Телефон: {payment_data.get('phone', '—')}\n"
@@ -398,34 +192,6 @@ async def handle_prodamus_webhook(request):
     except Exception as e:
         logger.error(f"Ошибка обработки webhook: {e}", exc_info=True)
         return web.Response(text="Error", status=500)
-
-
-# ─── Узнать ID группы ────────────────────────────────────────
-
-async def groupid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Напиши /groupid в группе — бот отправит ID в личку"""
-    chat = update.message.chat
-    user = update.message.from_user
-
-    # Удаляем команду из группы, чтобы никто не видел
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    # Отправляем в личку
-    try:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                f"ID группы: `{chat.id}`\n"
-                f"Название: {chat.title}\n"
-                f"Тип: {chat.type}"
-            ),
-            parse_mode="Markdown",
-        )
-    except Exception:
-        pass
 
 
 # ─── Админ-команды ──────────────────────────────────────────
@@ -498,7 +264,7 @@ async def run_webhook_server(app_telegram):
 def main():
     """Запуск бота"""
     global BOT_START_TIME
-    BOT_START_TIME = datetime.now()
+    BOT_START_TIME = datetime.now(timezone.utc)
     logger.info(f"Бот запущен в {BOT_START_TIME}. Все кто был в группе ДО этого момента — не проверяются.")
 
     init_db()
@@ -506,24 +272,13 @@ def main():
     # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Команды
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
+    # Админ-команды
     application.add_handler(CommandHandler("payments", list_payments))
     application.add_handler(CommandHandler("pending", list_pending))
-    application.add_handler(CommandHandler("groupid", groupid_command))
 
     # Отслеживание новых участников
     application.add_handler(
         ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER)
-    )
-
-    # Кнопки админа
-    application.add_handler(CallbackQueryHandler(handle_admin_callback))
-
-    # Сообщения в ЛС (для подтверждения оплаты)
-    application.add_handler(
-        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_private_message)
     )
 
     # Запускаем webhook-сервер для Prodamus + polling для Telegram
@@ -535,7 +290,7 @@ def main():
 
     # Polling для Telegram (получение обновлений)
     application.run_polling(
-        allowed_updates=[Update.CHAT_MEMBER, Update.MESSAGE, Update.CALLBACK_QUERY],
+        allowed_updates=[Update.CHAT_MEMBER, Update.MESSAGE],
         drop_pending_updates=True,
     )
 
