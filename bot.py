@@ -202,10 +202,12 @@ async def list_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     from database import get_db
+    from psycopg2.extras import RealDictCursor
     conn = get_db()
-    payments = conn.execute(
-        "SELECT * FROM payments ORDER BY paid_at DESC LIMIT 10"
-    ).fetchall()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM payments ORDER BY paid_at DESC LIMIT 10")
+    payments = cur.fetchall()
+    cur.close()
     conn.close()
 
     if not payments:
@@ -217,27 +219,6 @@ async def list_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             f"• {p['name'] or '—'} | @{p['telegram_username'] or '—'} | "
             f"{p['email'] or '—'} | {p['amount']} руб.\n"
-        )
-
-    await update.message.reply_text(text)
-
-
-async def list_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать ожидающих проверки (только для админа)"""
-    if update.message.from_user.id != ADMIN_CHAT_ID:
-        return
-
-    pending = get_pending_users()
-    if not pending:
-        await update.message.reply_text("Нет ожидающих проверки.")
-        return
-
-    text = "Ожидают проверки:\n\n"
-    for p in pending:
-        text += (
-            f"• {p['first_name']} {p['last_name'] or ''} | "
-            f"@{p['telegram_username'] or 'нет ника'} | "
-            f"ID: {p['telegram_user_id']}\n"
         )
 
     await update.message.reply_text(text)
@@ -274,7 +255,6 @@ def main():
 
     # Админ-команды
     application.add_handler(CommandHandler("payments", list_payments))
-    application.add_handler(CommandHandler("pending", list_pending))
 
     # Отслеживание новых участников
     application.add_handler(
