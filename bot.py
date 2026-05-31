@@ -84,7 +84,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Отправь мне email или номер телефона, "
         "который указывал(а) при оплате\n"
         "3. Я проверю и подтвержу доступ\n\n"
-        "Если что-то не получается — напиши @maysoulme"
+        "Если что-то не получается — напиши @maysouIme_bot"
     )
 
 
@@ -211,7 +211,7 @@ async def kick_unverified_user(context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     "К сожалению, я не смог(ла) подтвердить твою оплату "
                     "в течение 24 часов, и доступ к группе был закрыт.\n\n"
-                    "Если ты оплатил(а) интенсив — напиши @maysoulme, "
+                    "Если ты оплатил(а) интенсив — напиши @maysouIme, "
                     "и мы разберёмся!"
                 ),
             )
@@ -284,7 +284,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
             "Попробуй отправить:\n"
             "- Другой email\n"
             "- Номер телефона в формате +79991234567\n\n"
-            "Или напиши @maysoulme для помощи."
+            "Или напиши @maysouIme для помощи."
         )
 
 
