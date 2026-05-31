@@ -84,7 +84,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Отправь мне email или номер телефона, "
         "который указывал(а) при оплате\n"
         "3. Я проверю и подтвержу доступ\n\n"
-        "Если что-то не получается — напиши @maysouIme_bot"
+        "Если что-то не получается — напиши @maysouIme"
     )
 
 
